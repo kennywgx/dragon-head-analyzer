@@ -20,10 +20,10 @@ echo.
 
 REM 启动后端（新窗口）
 echo [1/2] 启动后端 http://localhost:8000
-start "后端-龙头战法" cmd /k "cd /d %~dp0backend && chcp 65001 >nul && pip install -r requirements.txt >nul 2>&1 && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+start "后端-龙头战法" cmd /k "cd /d %~dp0backend && chcp 65001 >nul && pip install -r requirements.txt >nul 2>&1 && python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
 
-REM 等3秒让后端先起来
-timeout /t 3 /nobreak >nul
+REM 等5秒让后端先起来
+timeout /t 5 /nobreak >nul
 
 REM 启动前端（新窗口）
 echo [2/2] 启动前端 http://localhost:3000
