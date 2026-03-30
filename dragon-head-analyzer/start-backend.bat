@@ -1,4 +1,5 @@
 @echo off
+chcp 65001 >nul
 cd /d %~dp0backend
 echo 启动龙头战法分析系统后端...
 pip install -r requirements.txt
