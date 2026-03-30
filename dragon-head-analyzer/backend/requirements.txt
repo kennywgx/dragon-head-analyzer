@@ -1,0 +1,7 @@
+fastapi
+uvicorn
+akshare
+efinance
+apscheduler
+pydantic
+python-dateutil
