@@ -5,3 +5,5 @@ efinance
 apscheduler
 pydantic
 python-dateutil
+requests
+numpy

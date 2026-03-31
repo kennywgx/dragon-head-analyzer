@@ -93,3 +93,26 @@ async def trigger_scan():
     for s in result.get("signals", []):
         logger.log_signal(s)
     return {"success": True, "data": result}
+
+
+@router.post("/cache/clear")
+async def clear_cache(prefix: str = Query(None, description="缓存前缀，为空则清理全部")):
+    """手动清理缓存"""
+    fetcher.clear_cache(prefix)
+    return {"success": True, "message": "缓存已清理"}
+
+
+@router.get("/cache/stats")
+async def cache_stats():
+    """查看缓存统计"""
+    cache_dir = fetcher.cache.cache_dir
+    files = list(cache_dir.glob("*.json"))
+    total_size = sum(f.stat().st_size for f in files)
+    return {
+        "success": True,
+        "data": {
+            "file_count": len(files),
+            "total_size_mb": round(total_size / 1024 / 1024, 2),
+            "cache_dir": str(cache_dir),
+        }
+    }

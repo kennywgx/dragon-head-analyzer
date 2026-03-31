@@ -268,9 +268,9 @@ class DragonHeadAnalyzer:
         return candidates
 
     def _get_recent_date(self, days: int = 5) -> str:
-        """获取N个交易日前的日期（近似）"""
+        """获取N个交易日前的日期（近似：多减几天跳过周末）"""
         from datetime import timedelta
-        d = datetime.now() - timedelta(days=days + 3)  # 多减几天跳过周末
+        d = datetime.now() - timedelta(days=days + 3)
         return d.strftime("%Y%m%d")
 
     # ==========================================================================
@@ -612,7 +612,7 @@ class DragonHeadAnalyzer:
     # 个股详情
     # ==========================================================================
     def get_stock_detail(self, code: str) -> dict:
-        """获取个股详情（分时+资金流+连板信息）"""
+        """获取个股详情（分时+资金流+连板信息）- 默认30天历史数据"""
         detail = {"code": code}
 
         # 分时K线（5分钟）
@@ -620,10 +620,10 @@ class DragonHeadAnalyzer:
         if not min_kline.empty:
             detail["minute_kline"] = min_kline.tail(48).to_dict(orient="records")
 
-        # 日线
-        hist = self.fetcher.get_stock_history(code, start_date="20250101")
+        # 日线（最近30天，减少请求量）
+        hist = self.fetcher.get_stock_history(code, days=30)
         if not hist.empty:
-            detail["daily_kline"] = hist.tail(60).to_dict(orient="records")
+            detail["daily_kline"] = hist.tail(30).to_dict(orient="records")
 
         # 资金流向
         fund_flow = self.fetcher.get_fund_flow_individual(code)

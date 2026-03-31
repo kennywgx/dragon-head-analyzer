@@ -152,3 +152,69 @@ dragon-head-analyzer/
 - [ ] 更多K线形态（锤子线、吞没形态等）
 - [ ] 历史回测功能
 - [ ] 信号触发的价格/时间精确记录
+
+---
+
+## 2026-04-01 — 数据源重构：多源回退 + 磁盘缓存 + 反反爬
+
+### 问题
+
+- `push2his.eastmoney.com` 接口从服务器环境无法访问，导致 akshare/efinance 多数接口超时或失败
+- 需要找到可替代的数据获取方案，同时保持原有功能不变
+
+### 解决方案
+
+#### 1. 完全重写 `data_fetcher.py` ✅
+采用三层架构：
+
+```
+请求层: akshare/efinance (优先) → 新浪/腾讯 (备用) → 返回空
+   ↓
+缓存层: DiskCache (JSON 文件, 本地持久化)
+   ↓
+工具层: polite_delay + UA 伪装 + 错误处理
+```
+
+#### 2. 本地磁盘缓存 (`DiskCache`) ✅
+- 缓存目录：`backend/data_cache/`（自动创建）
+- 格式：每个 key 对应一个 JSON 文件（MD5 命名）
+- 包含 `data` + `timestamp` + `key`
+- TTL 策略：
+  - 涨停池/炸板池：交易时间 60s，盘后 300s，周末 24h
+  - 实时行情：10s
+  - 日线历史：24h（数据不会变）
+  - 分时K线：1h
+  - 板块数据：120s
+  - 资金流向：300s
+- 自动清理：启动时清理超过 30 天的缓存文件
+
+#### 3. 新浪备用数据源 (`SinaStockAPI`) ✅
+- 实时行情：`hq.sinajs.cn` 接口
+- K线数据：`money.finance.sina.com.cn` 接口（支持 5/15/30/60/240 分钟）
+- 当 akshare/efinance 失败时自动切换
+
+#### 4. 反反爬措施 ✅
+- **随机延迟**：每个请求之间随机 0.5-2s 延迟
+- **UA 伪装**：4 个 User-Agent 轮换
+- **Referer 设置**：模拟来自东方财富网站的请求
+- **批量限制**：新浪行情单次最多 80 只股票
+
+#### 5. 历史数据精简 ✅
+- `get_stock_history()` 默认只取 30 天（参数 `days=30`）
+- `get_stock_detail()` 日线从 `start_date="20250101"` 改为 `days=30`
+- 大幅减少每次请求的数据量
+
+#### 6. 新增缓存管理 API ✅
+| 接口 | 方法 | 说明 |
+|------|------|------|
+| `/api/cache/clear` | POST | 清理缓存（可指定前缀） |
+| `/api/cache/stats` | GET | 查看缓存文件数和大小 |
+
+### 修改文件清单
+
+| 文件 | 修改内容 |
+|------|----------|
+| `backend/app/services/data_fetcher.py` | 完全重写：DiskCache + SinaStockAPI + 多源回退 + 反反爬 |
+| `backend/app/services/analyzer.py` | `get_stock_detail()` 改为默认 30 天 |
+| `backend/app/routers/stocks.py` | 新增 `/api/cache/clear` 和 `/api/cache/stats` |
+| `backend/requirements.txt` | 新增 `requests`、`numpy` |
