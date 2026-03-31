@@ -155,66 +155,60 @@ dragon-head-analyzer/
 
 ---
 
-## 2026-04-01 — 数据源重构：多源回退 + 磁盘缓存 + 反反爬
+## 2026-04-01 — 数据源重构 v2：诚实分层架构
 
 ### 问题
 
-- `push2his.eastmoney.com` 接口从服务器环境无法访问，导致 akshare/efinance 多数接口超时或失败
-- 需要找到可替代的数据获取方案，同时保持原有功能不变
+- `push2his.eastmoney.com` 接口从服务器环境无法访问
+- v1 的 fallback 是假的——涨停池 fallback 到 efinance，efinance 底层也是东方财富
+- 日志混淆：报 "akshare 失败" 但实际错误来自 eastmoney.com
 
-### 解决方案
-
-#### 1. 完全重写 `data_fetcher.py` ✅
-采用三层架构：
+### 架构重构：按数据类型分层
 
 ```
-请求层: akshare/efinance (优先) → 新浪/腾讯 (备用) → 返回空
-   ↓
-缓存层: DiskCache (JSON 文件, 本地持久化)
-   ↓
-工具层: polite_delay + UA 伪装 + 错误处理
+┌─────────────────────────────────────────────────────┐
+│  A. 核心数据（仅东方财富提供，无替代源）           │
+│     涨停池 / 炸板池 / 连板数 / 封单额              │
+│     板块排名 / 资金流向 / 龙虎榜                   │
+│     → 只走 akshare（底层: 东方财富）               │
+│     → 失败降级: 返回过期缓存（stale cache）        │
+│     → 不假装有备用源                               │
+├─────────────────────────────────────────────────────┤
+│  B. 通用数据（多源可替代）                         │
+│     实时行情 / 日线K线 / 分钟K线                   │
+│     → 源1: akshare/efinance（东方财富）            │
+│     → 源2: 新浪财经 HTTP 接口（真回退）           │
+├─────────────────────────────────────────────────────┤
+│  C. 缓存层（所有数据共享）                         │
+│     JSON 文件缓存, 30天自动清理                    │
+│     核心数据: stale-while-revalidate 降级策略      │
+└─────────────────────────────────────────────────────┘
 ```
 
-#### 2. 本地磁盘缓存 (`DiskCache`) ✅
-- 缓存目录：`backend/data_cache/`（自动创建）
-- 格式：每个 key 对应一个 JSON 文件（MD5 命名）
-- 包含 `data` + `timestamp` + `key`
-- TTL 策略：
-  - 涨停池/炸板池：交易时间 60s，盘后 300s，周末 24h
-  - 实时行情：10s
-  - 日线历史：24h（数据不会变）
-  - 分时K线：1h
-  - 板块数据：120s
-  - 资金流向：300s
-- 自动清理：启动时清理超过 30 天的缓存文件
+### 关键改动
 
-#### 3. 新浪备用数据源 (`SinaStockAPI`) ✅
-- 实时行情：`hq.sinajs.cn` 接口
-- K线数据：`money.finance.sina.com.cn` 接口（支持 5/15/30/60/240 分钟）
-- 当 akshare/efinance 失败时自动切换
+1. **删除假 fallback**：涨停池不再用 efinance 当"备用"（它底层也是东方财富）
+2. **核心数据降级策略**：东方财富挂了 → 返回过期缓存（比空数据好）
+3. **日志更清晰**：`[EM]` 表示东方财富源，`[Sina]` 表示新浪源，不再写 "akshare 失败"
+4. **缓存增加 `get_stale()`**：忽略 TTL 获取过期数据，用于降级
+5. **代码精简**：去除冗余的 `_fetch_xxx_akshare` / `_fetch_xxx_fallback` 拆分，每个方法自包含
 
-#### 4. 反反爬措施 ✅
-- **随机延迟**：每个请求之间随机 0.5-2s 延迟
-- **UA 伪装**：4 个 User-Agent 轮换
-- **Referer 设置**：模拟来自东方财富网站的请求
-- **批量限制**：新浪行情单次最多 80 只股票
+### 数据源依赖表
 
-#### 5. 历史数据精简 ✅
-- `get_stock_history()` 默认只取 30 天（参数 `days=30`）
-- `get_stock_detail()` 日线从 `start_date="20250101"` 改为 `days=30`
-- 大幅减少每次请求的数据量
-
-#### 6. 新增缓存管理 API ✅
-| 接口 | 方法 | 说明 |
-|------|------|------|
-| `/api/cache/clear` | POST | 清理缓存（可指定前缀） |
-| `/api/cache/stats` | GET | 查看缓存文件数和大小 |
+| 数据类型 | 主源 | 备用源 | 说明 |
+|---------|------|--------|------|
+| 涨停池 | EM (akshare) | 过期缓存 | 无替代数据源 |
+| 炸板池 | EM (akshare) | 过期缓存 | 无替代数据源 |
+| 连板池 | 涨停池筛选 | - | 从涨停池计算 |
+| 实时行情 | EF (efinance) | 新浪（有限） | 新浪需代码列表 |
+| 分钟K线 | EM (akshare) | 新浪 | ✅ 真回退 |
+| 日线K线 | EM (akshare) | 新浪 | ✅ 真回退 |
+| 板块排名 | EM (akshare) | 过期缓存 | 无替代数据源 |
+| 资金流向 | EM (akshare) | - | 无替代数据源 |
+| 龙虎榜 | EM (akshare) | - | 无替代数据源 |
 
 ### 修改文件清单
 
 | 文件 | 修改内容 |
 |------|----------|
-| `backend/app/services/data_fetcher.py` | 完全重写：DiskCache + SinaStockAPI + 多源回退 + 反反爬 |
-| `backend/app/services/analyzer.py` | `get_stock_detail()` 改为默认 30 天 |
-| `backend/app/routers/stocks.py` | 新增 `/api/cache/clear` 和 `/api/cache/stats` |
-| `backend/requirements.txt` | 新增 `requests`、`numpy` |
+| `backend/app/services/data_fetcher.py` | 完全重写 v2: 分层架构 + 过期缓存降级 + 清晰日志 |
