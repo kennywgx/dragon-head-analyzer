@@ -9,12 +9,36 @@
 
     <div v-if="loading" class="loading">加载中...</div>
     <template v-else>
-      <!-- 分时K线 -->
+      <!-- K线图（日线） -->
       <div class="card">
         <div class="card-header">
-          <span class="card-title">⏰ 5分钟K线（近48根）</span>
+          <span class="card-title">📊 K线图</span>
         </div>
-        <div v-if="detail.minute_kline && detail.minute_kline.length" class="kline-list">
+        <KlineChart
+          v-if="detail.daily_kline && detail.daily_kline.length"
+          :data="detail.daily_kline"
+          initial-period="daily" />
+        <div v-else class="empty">暂无K线数据</div>
+      </div>
+
+      <!-- 分时K线图 -->
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">⏰ 5分钟K线图</span>
+        </div>
+        <KlineChart
+          v-if="detail.minute_kline && detail.minute_kline.length"
+          :data="detail.minute_kline"
+          initial-period="5min" />
+        <div v-else class="empty">暂无分时数据</div>
+      </div>
+
+      <!-- 分时数据表 -->
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">📋 分时数据（近20根）</span>
+        </div>
+        <div v-if="detail.minute_kline && detail.minute_kline.length">
           <table class="data-table">
             <thead>
               <tr>
@@ -43,12 +67,12 @@
         <div v-else class="empty">暂无分时数据</div>
       </div>
 
-      <!-- 日线 -->
+      <!-- 日线数据表 -->
       <div class="card">
         <div class="card-header">
-          <span class="card-title">📅 日线（近60日）</span>
+          <span class="card-title">📅 日线数据（近20日）</span>
         </div>
-        <div v-if="detail.daily_kline && detail.daily_kline.length" class="kline-list">
+        <div v-if="detail.daily_kline && detail.daily_kline.length">
           <table class="data-table">
             <thead>
               <tr>
@@ -116,9 +140,11 @@
 
 <script>
 import api from '../api'
+import KlineChart from '../components/KlineChart.vue'
 
 export default {
   name: 'StockDetail',
+  components: { KlineChart },
   data() {
     return {
       detail: {},
@@ -171,9 +197,5 @@ export default {
 }
 .page-header h1 {
   font-size: 24px;
-}
-.kline-list {
-  max-height: 400px;
-  overflow-y: auto;
 }
 </style>

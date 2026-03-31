@@ -15,6 +15,10 @@ class StockCandidate(BaseModel):
     seal_amount: Optional[float] = None
     circ_mv: Optional[float] = None
     turnover: Optional[float] = None
+    board_bonus: Optional[float] = 0
+    patterns: Optional[list] = []
+    compete_slot: Optional[dict] = None
+    kline_patterns: Optional[list] = []
 
 
 class TradeSignal(BaseModel):
@@ -26,6 +30,25 @@ class TradeSignal(BaseModel):
     lianban: Optional[int] = None
     level: Optional[str] = None
     score: Optional[float] = None
+    severity: Optional[str] = None
+
+
+class ExitSignal(BaseModel):
+    time: str
+    code: str
+    name: str
+    type: str
+    detail: str
+    severity: str = "medium"
+
+
+class PositionSuggestion(BaseModel):
+    code: str
+    name: str
+    level: str
+    lianban: int
+    suggested_position: int
+    reason: str
 
 
 class ScanResult(BaseModel):
@@ -35,6 +58,8 @@ class ScanResult(BaseModel):
     zr_pool_count: int
     candidates: list[StockCandidate]
     signals: list[TradeSignal]
+    exit_signals: list[ExitSignal] = []
+    position_suggestions: list[PositionSuggestion] = []
 
 
 class ApiResponse(BaseModel):
