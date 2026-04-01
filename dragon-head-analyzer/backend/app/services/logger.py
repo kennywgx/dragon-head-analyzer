@@ -1,10 +1,13 @@
 """
-日志服务 - 写入 logs/{date}.log
+日志服务 - 写入 logs/{date}.log + Python logging
 """
 import os
+import logging
 from datetime import datetime
 from pathlib import Path
 from ..core.config import LOG_DIR
+
+logger = logging.getLogger(__name__)
 
 
 class AnalyzerLogger:
@@ -23,9 +26,12 @@ class AnalyzerLogger:
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         line = f"[{timestamp}] {message}\n"
         log_file = self._get_log_file()
-        with open(log_file, "a", encoding="utf-8") as f:
-            f.write(line)
-        print(line.strip())
+        try:
+            with open(log_file, "a", encoding="utf-8") as f:
+                f.write(line)
+        except IOError as e:
+            logger.error(f"写入日志文件失败: {e}")
+        logger.info(message)
 
     def log_signal(self, signal: dict):
         """记录交易信号"""

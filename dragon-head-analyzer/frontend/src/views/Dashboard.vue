@@ -7,6 +7,12 @@
       </button>
     </div>
 
+    <!-- 错误提示 -->
+    <div v-if="errorMsg" class="error-toast" @click="errorMsg = ''">
+      ⚠️ {{ errorMsg }}
+      <span class="error-close">✕</span>
+    </div>
+
     <!-- 统计卡片 -->
     <div class="stats-grid">
       <div class="card stat-card">
@@ -208,14 +214,22 @@ export default {
       positionSuggestions: [],
       loading: false,
       scanning: false,
+      errorMsg: '',
+      refreshTimer: null,
     }
   },
   mounted() {
     this.loadData()
+    // 每5分钟自动刷新
+    this.refreshTimer = setInterval(() => this.loadData(), 5 * 60 * 1000)
+  },
+  beforeUnmount() {
+    if (this.refreshTimer) clearInterval(this.refreshTimer)
   },
   methods: {
     async loadData() {
       this.loading = true
+      this.errorMsg = ''
       try {
         const res = await api.scan()
         if (res.data.success) {
@@ -227,12 +241,14 @@ export default {
           this.positionSuggestions = d.position_suggestions || []
         }
       } catch (e) {
+        this.errorMsg = '加载数据失败: ' + (e.response?.data?.detail || e.message)
         console.error('加载数据失败:', e)
       }
       this.loading = false
     },
     async runScan() {
       this.scanning = true
+      this.errorMsg = ''
       try {
         const res = await api.triggerScan()
         if (res.data.success) {
@@ -244,6 +260,7 @@ export default {
           this.positionSuggestions = d.position_suggestions || []
         }
       } catch (e) {
+        this.errorMsg = '扫描失败: ' + (e.response?.data?.detail || e.message)
         console.error('扫描失败:', e)
       }
       this.scanning = false
@@ -361,5 +378,24 @@ export default {
   font-size: 12px;
   font-weight: 600;
   color: #333;
+}
+.error-toast {
+  background: #fff1f0;
+  border: 1px solid #ffa39e;
+  color: #cf1322;
+  padding: 12px 16px;
+  border-radius: 6px;
+  margin-bottom: 16px;
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.error-close {
+  font-size: 14px;
+  opacity: 0.6;
+}
+.error-toast:hover .error-close {
+  opacity: 1;
 }
 </style>

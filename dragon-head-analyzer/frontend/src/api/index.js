@@ -1,9 +1,19 @@
 import axios from 'axios'
 
 const api = axios.create({
-  baseURL: '/api',
+  baseURL: import.meta.env.VITE_API_BASE || '/api',
   timeout: 30000,
 })
+
+// 响应拦截器：统一错误处理
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    const msg = error.response?.data?.detail || error.message || '请求失败'
+    console.error(`[API] ${error.config?.url}: ${msg}`)
+    return Promise.reject(error)
+  }
+)
 
 export default {
   // 全量扫描
@@ -41,5 +51,9 @@ export default {
   // 日志
   getLogs(date) {
     return api.get('/logs', { params: { date } })
+  },
+  // 健康检查
+  health() {
+    return api.get('/health')
   },
 }

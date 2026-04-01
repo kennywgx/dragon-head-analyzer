@@ -31,10 +31,35 @@ import json
 import time
 import random
 import hashlib
+import logging
 import requests
 from datetime import datetime, timedelta
 from typing import Optional
 from pathlib import Path
+from functools import wraps
+
+logger = logging.getLogger(__name__)
+
+
+def retry(max_attempts=3, delay=1.0, backoff=2.0, exceptions=(Exception,)):
+    """指数退避重试装饰器"""
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            last_exc = None
+            wait = delay
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    return func(*args, **kwargs)
+                except exceptions as e:
+                    last_exc = e
+                    if attempt < max_attempts:
+                        logger.warning(f"[Retry] {func.__name__} 第{attempt}次失败: {e}, {wait:.1f}s后重试")
+                        time.sleep(wait)
+                        wait *= backoff
+            raise last_exc
+        return wrapper
+    return decorator
 
 
 # =============================================================================
@@ -94,7 +119,7 @@ class DiskCache:
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(record, f, ensure_ascii=False, default=str)
         except IOError as e:
-            print(f"[Cache] 写入失败: {e}")
+            logger.info(f"[Cache] 写入失败: {e}")
 
     def cleanup(self):
         """清理超过 max_age_days 的缓存"""
@@ -105,7 +130,7 @@ class DiskCache:
                 f.unlink()
                 count += 1
         if count:
-            print(f"[Cache] 清理 {count} 个过期文件")
+            logger.info(f"[Cache] 清理 {count} 个过期文件")
 
 
 # =============================================================================
@@ -172,7 +197,7 @@ class SinaAPI:
                     })
             return results
         except Exception as e:
-            print(f"[Sina] 实时行情失败: {e}")
+            logger.info(f"[Sina] 实时行情失败: {e}")
             return []
 
     @staticmethod
@@ -191,7 +216,7 @@ class SinaAPI:
             data = resp.json()
             return data if isinstance(data, list) else []
         except Exception as e:
-            print(f"[Sina] K线失败({code}): {e}")
+            logger.info(f"[Sina] K线失败({code}): {e}")
             return []
 
 
@@ -244,19 +269,25 @@ class DataFetcher:
 
         polite_delay()
         try:
-            df = ak.stock_zt_pool_em(date=date_str)
-            print(f"[EM] 涨停池 {date_str}: {len(df)} 条")
+            df = self._fetch_zt_pool_with_retry(date_str)
+            logger.info(f"[EM] 涨停池 {date_str}: {len(df)} 条")
             if not df.empty:
                 self.cache.set(key, self._to_records(df))
             return df
         except Exception as e:
-            print(f"[EM] 涨停池失败: {e}")
-            # 降级：返回过期缓存
+            logger.error(f"[EM] 涨停池失败(重试耗尽): {e}")
             stale = self.cache.get_stale(key)
             if stale is not None:
-                print(f"[EM] 涨停池使用过期缓存")
+                logger.info(f"[EM] 涨停池使用过期缓存")
                 return pd.DataFrame(stale)
             return pd.DataFrame()
+
+    @retry(max_attempts=3, delay=2.0)
+    def _fetch_zt_pool_with_retry(self, date_str: str) -> pd.DataFrame:
+        df = ak.stock_zt_pool_em(date=date_str)
+        if df is None:
+            raise ValueError("涨停池返回None")
+        return df
 
     def get_lb_pool(self, trade_date: Optional[str] = None) -> pd.DataFrame:
         """连板池（从涨停池筛选连板数>1）"""
@@ -280,17 +311,24 @@ class DataFetcher:
 
         polite_delay()
         try:
-            df = ak.stock_zt_pool_zbgc_em(date=date_str)
-            print(f"[EM] 炸板池 {date_str}: {len(df)} 条")
+            df = self._fetch_zr_pool_with_retry(date_str)
+            logger.info(f"[EM] 炸板池 {date_str}: {len(df)} 条")
             if not df.empty:
                 self.cache.set(key, self._to_records(df))
             return df
         except Exception as e:
-            print(f"[EM] 炸板池失败: {e}")
+            logger.error(f"[EM] 炸板池失败(重试耗尽): {e}")
             stale = self.cache.get_stale(key)
             if stale is not None:
                 return pd.DataFrame(stale)
             return pd.DataFrame()
+
+    @retry(max_attempts=3, delay=2.0)
+    def _fetch_zr_pool_with_retry(self, date_str: str) -> pd.DataFrame:
+        df = ak.stock_zt_pool_zbgc_em(date=date_str)
+        if df is None:
+            raise ValueError("炸板池返回None")
+        return df
 
     # =========================================================================
     # 实时行情（通用数据，多源回退）
@@ -315,10 +353,10 @@ class DataFetcher:
                 self.cache.set(key, self._to_records(df))
                 return df
         except Exception as e:
-            print(f"[EF] 实时行情失败: {e}")
+            logger.info(f"[EF] 实时行情失败: {e}")
 
         # 源2: 新浪（需要代码列表，这里无法全量获取，返回空）
-        print("[Sina] 实时行情备用源不支持全量获取，跳过")
+        logger.info("[Sina] 实时行情备用源不支持全量获取，跳过")
         return pd.DataFrame()
 
     # =========================================================================
@@ -344,7 +382,7 @@ class DataFetcher:
                 self.cache.set(key, self._to_records(df))
                 return df
         except Exception as e:
-            print(f"[EM] 分钟K线失败({code}): {e}")
+            logger.info(f"[EM] 分钟K线失败({code}): {e}")
 
         # 源2: 新浪
         polite_delay()
@@ -358,11 +396,11 @@ class DataFetcher:
                     "成交额": 0,
                 } for d in data]
                 df = pd.DataFrame(records)
-                print(f"[Sina] 分钟K线成功({code}): {len(df)} 条")
+                logger.info(f"[Sina] 分钟K线成功({code}): {len(df)} 条")
                 self.cache.set(key, self._to_records(df))
                 return df
         except Exception as e:
-            print(f"[Sina] 分钟K线失败({code}): {e}")
+            logger.info(f"[Sina] 分钟K线失败({code}): {e}")
 
         return pd.DataFrame()
 
@@ -400,7 +438,7 @@ class DataFetcher:
                 self.cache.set(key, self._to_records(df))
                 return df
         except Exception as e:
-            print(f"[EM] 日线失败({code}): {e}")
+            logger.info(f"[EM] 日线失败({code}): {e}")
 
         # 源2: 新浪
         polite_delay()
@@ -420,11 +458,11 @@ class DataFetcher:
                         "涨跌额": round(c - o, 2), "换手率": 0,
                     })
                 df = pd.DataFrame(records)
-                print(f"[Sina] 日线成功({code}): {len(df)} 条")
+                logger.info(f"[Sina] 日线成功({code}): {len(df)} 条")
                 self.cache.set(key, self._to_records(df))
                 return df
         except Exception as e:
-            print(f"[Sina] 日线失败({code}): {e}")
+            logger.info(f"[Sina] 日线失败({code}): {e}")
 
         return pd.DataFrame()
 
@@ -452,7 +490,7 @@ class DataFetcher:
                 self.cache.set(key, self._to_records(df))
             return df
         except Exception as e:
-            print(f"[EM] 板块数据失败: {e}")
+            logger.info(f"[EM] 板块数据失败: {e}")
             stale = self.cache.get_stale(key)
             if stale is not None:
                 return pd.DataFrame(stale)
@@ -474,7 +512,7 @@ class DataFetcher:
                 self.cache.set(key, self._to_records(df))
             return df
         except Exception as e:
-            print(f"[EM] 板块成分股失败({board_name}): {e}")
+            logger.info(f"[EM] 板块成分股失败({board_name}): {e}")
             return pd.DataFrame()
 
     # =========================================================================
@@ -499,7 +537,7 @@ class DataFetcher:
                 self.cache.set(key, self._to_records(df))
             return df
         except Exception as e:
-            print(f"[EM] 资金流向失败({code}): {e}")
+            logger.info(f"[EM] 资金流向失败({code}): {e}")
             return pd.DataFrame()
 
     # =========================================================================
@@ -525,7 +563,7 @@ class DataFetcher:
                 self.cache.set(key, self._to_records(df))
             return df
         except Exception as e:
-            print(f"[EM] 龙虎榜失败: {e}")
+            logger.info(f"[EM] 龙虎榜失败: {e}")
             return pd.DataFrame()
 
     # =========================================================================
@@ -549,4 +587,4 @@ class DataFetcher:
             else:
                 f.unlink()
                 count += 1
-        print(f"[Cache] 清理 {count} 个文件")
+        logger.info(f"[Cache] 清理 {count} 个文件")

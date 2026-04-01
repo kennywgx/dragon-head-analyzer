@@ -12,7 +12,7 @@
         <li><router-link to="/logs" active-class="active">📝 日志</router-link></li>
       </ul>
       <div class="nav-footer">
-        <span class="version">v0.1.0</span>
+        <span class="version">v0.2.0</span>
       </div>
     </nav>
     <main class="content">
