@@ -514,43 +514,51 @@ ScanResult         # 扫描结果 (顶层)
 
 ## 7. 外部接口管理
 
-### 7.1 数据源分层架构
+### 7.1 SourceRegistry 自适应多源架构
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│  A. 核心数据（仅东方财富提供，无替代源）                        │
-│     数据: 涨停池/炸板池/连板数/封单额/板块/资金流/龙虎榜       │
-│     走向: akshare (底层: eastmoney.com)                         │
-│     降级: 失败 → 过期缓存 (stale cache) → 空                   │
+│                     SourceRegistry                               │
+│                                                                  │
+│  每类数据 → [Source₁, Source₂, Source₃, ...]                   │
+│  每个 Source 持有:                                               │
+│    · name         源名称                                        │
+│    · fetch_fn     获取函数                                      │
+│    · priority     基础优先级 (1-100)                            │
+│    · health       健康分 (0-100, 动态)                          │
+│    · consecutive_failures  连续失败计数                         │
+│                                                                  │
+│  有效优先级 = priority × (health / 100)                         │
+│  按有效优先级排序，可用源优先尝试                                │
 ├─────────────────────────────────────────────────────────────────┤
-│  B. 通用数据（多源可替代）                                      │
-│     数据: 实时行情/日线K线/分钟K线                              │
-│     源1:  akshare/efinance (底层: eastmoney.com)                │
-│     源2:  新浪财经 HTTP API (真回退)                            │
-│     降级: 源1失败 → 源2 → 空                                   │
+│  故障转移规则:                                                   │
+│    失败:   health -= 30                                         │
+│    成功:   health += 10, consecutive_failures = 0               │
+│    连续失败 ≥ 3次:                                              │
+│      → priority *= 0.5 (降级)                                   │
+│      → cooldown 5分钟 (暂不可用)                                │
+│      → 同组其他源自动受益                                       │
+│    定时恢复: 每10分钟 health += 5 (不超过100)                   │
 ├─────────────────────────────────────────────────────────────────┤
-│  C. 缓存层（所有数据共享）                                      │
-│     方式: JSON 文件 (backend/data_cache/)                       │
-│     策略: 交易时段 TTL=60s / 盘后 300s / 周末 86400s           │
-│     降级: 核心数据 get_stale() 忽略过期                         │
-│     清理: 30天自动清理                                         │
+│  核心数据降级: 失败 → 过期缓存 (stale cache)                    │
+│  通用数据降级: 源1失败 → 源2 → 源3 → 空                        │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
 ### 7.2 数据源对照表
 
-| 数据类型 | 主源 API | 备用源 | 失败策略 |
-|---|---|---|---|
-| 涨停池 | `ak.stock_zt_pool_em(date)` | 过期缓存 | 返回 stale / 空 |
-| 炸板池 | `ak.stock_zt_pool_zbgc_em(date)` | 过期缓存 | 返回 stale / 空 |
-| 连板池 | 从涨停池筛选 `连板数>1` | - | 依赖涨停池 |
-| 实时行情 | `ef.stock.get_realtime_quotes()` | `SinaAPI.get_realtime()` | 返回空 |
-| 分钟K线 | `ak.stock_zh_a_hist_min_em()` | `SinaAPI.get_kline()` | 返回空 |
-| 日线K线 | `ak.stock_zh_a_hist()` | `SinaAPI.get_kline()` | 返回空 |
-| 板块排名 | `ak.stock_board_concept_name_em()` | 过期缓存 | 返回 stale / 空 |
-| 板块成分 | `ak.stock_board_concept_cons_em()` | - | 返回空 |
-| 资金流向 | `ak.stock_individual_fund_flow()` | - | 返回空 |
-| 龙虎榜 | `ak.stock_lhb_detail_em()` | - | 返回空 |
+| 数据类型 | 源1 (优先级100) | 源2 (优先级50) | 源3 (优先级25) | 降级策略 |
+|---|---|---|---|---|
+| 涨停池 | `ak.stock_zt_pool_em` | - | - | 过期缓存 |
+| 炸板池 | `ak.stock_zt_pool_zbgc_em` | - | - | 过期缓存 |
+| 连板池 | 从涨停池筛选 | - | - | 依赖涨停池 |
+| 实时行情 | `ef.stock.get_realtime_quotes` | - | - | 返回空 |
+| 分钟K线 | `ak.stock_zh_a_hist_min_em` | `SinaAPI.get_kline` | `TencentAPI.get_minute_kline` | 返回空 |
+| 日线K线 | `ak.stock_zh_a_hist` | `SinaAPI.get_kline` | `TencentAPI.get_kline` | 返回空 |
+| 板块排名 | `ak.stock_board_concept_name_em` | - | - | 过期缓存 |
+| 板块成分 | `ak.stock_board_concept_cons_em` | - | - | 返回空 |
+| 资金流向 | `ak.stock_individual_fund_flow` | - | - | 返回空 |
+| 龙虎榜 | `ak.stock_lhb_detail_em` | - | - | 过期缓存 |
 
 ### 7.3 反反爬策略
 
@@ -559,7 +567,6 @@ ScanResult         # 扫描结果 (顶层)
   1. 随机延迟: time.sleep(random.uniform(0.5, 2.0))
   2. UA 轮换: 4 个主流浏览器 UA 随机选择
   3. 请求头: Accept / Accept-Language 伪装
-  4. 重试: 核心接口 3 次指数退避 (1s → 2s → 4s)
 ```
 
 ### 7.4 缓存 Key 设计
@@ -577,6 +584,13 @@ board_cons_{板块名}        → 板块成分 (300s TTL)
 fund_flow_{code}           → 资金流向 (300s TTL)
 lhb_{YYYYMMDD}             → 龙虎榜 (24h TTL)
 ```
+
+### 7.5 数据源管理 API
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/sources/status` | 所有数据源健康面板 (优先级/健康分/成功率) |
+| POST | `/api/sources/reset?data_type=` | 手动重置数据源优先级 |
 
 ---
 
@@ -605,6 +619,8 @@ lhb_{YYYYMMDD}             → 龙虎榜 (24h TTL)
 | GET | `/api/tasks/results/recent` | 最近执行结果 | `?limit=50&task_id=` |
 | GET | `/api/tasks/results/dates` | 有记录的日期 | - |
 | GET | `/api/tasks/results/{date}` | 指定日期结果 | path: date |
+| GET | `/api/sources/status` | 数据源健康面板 | - |
+| POST | `/api/sources/reset` | 重置数据源优先级 | `?data_type=` |
 
 ---
 
