@@ -1,6 +1,6 @@
 # 龙头战法分析系统 — 架构设计文档
 
-> 版本: v0.2.0 | 更新: 2026-04-01
+> 版本: v0.3.0 | 更新: 2026-04-01
 
 ---
 
@@ -84,6 +84,7 @@ dragon-head-analyzer/
 │       └── services/
 │           ├── data_fetcher.py       # 数据获取 (多源回退 + 缓存)
 │           ├── analyzer.py           # 规则引擎 (11 步分析流水线)
+│           ├── task_manager.py       # 任务管理 (8个内置任务 + 执行引擎)
 │           └── logger.py             # 日志服务 (文件 + logging)
 │
 ├── frontend/                         # Vue 3 前端
@@ -99,7 +100,7 @@ dragon-head-analyzer/
 │       ├── api/
 │       │   └── index.js              # Axios 封装 + 拦截器
 │       ├── router/
-│       │   └── index.js              # 路由配置 (5 个页面)
+│       │   └── index.js              # 路由配置 (6 个页面)
 │       ├── components/
 │       │   ├── KlineChart.vue        # SVG 蜡烛图组件
 │       │   └── HelloWorld.vue        # 占位组件 (未使用)
@@ -108,6 +109,7 @@ dragon-head-analyzer/
 │           ├── ZtPool.vue            # 涨停池/连板池/炸板池
 │           ├── StockDetail.vue       # 个股详情 (K线+资金流)
 │           ├── Boards.vue            # 板块排名
+│           ├── Tasks.vue             # 任务中心 (调度+规则监听)
 │           └── Logs.vue              # 分析日志查看
 │
 ├── docker-compose.yml                # 一键编排
@@ -230,6 +232,94 @@ App.vue (根组件)
   ├── 十字线追踪 (mousemove)
   └── 悬浮 OHLCV tooltip
 ```
+
+---
+
+## 4.3 任务系统 (`services/task_manager.py`)
+
+任务系统分两大类，共 8 个内置任务：
+
+### 调度类任务 (scheduled)
+
+| 任务 ID | 名称 | 调度 | 说明 |
+|---|---|---|---|
+| `pre_market_scan` | 盘前集合竞价扫描 | 周一至周五 09:15 | 检测首板异动、高开信号 |
+| `close_scan` | 收盘全量扫描 | 周一至周五 15:10 | 涨停池+龙头识别+信号+日志 |
+| `weekend_review` | 周末复盘汇总 | 周六 10:00 | 本周信号统计 |
+
+### 规则监听类任务 (rule_monitor)
+
+| 任务 ID | 规则类型 | 调度 | 核心逻辑 |
+|---|---|---|---|
+| `emotion_monitor` | 情绪周期 | 每30分钟 | 涨停家数/晋级率/炸板率 → 冰点/退潮/修复/发酵/高潮 |
+| `yijiner_scanner` | 一进二 | 09:25 | 首板→二板候选，排除烂板/左压，5-20亿成交额 |
+| `seal_strength_monitor` | 封单强度 | 每15分钟 | 封单量:成交量比值，>5:1强势，<2:1预警 |
+| `sector_resonance_monitor` | 板块共振 | 10/11/13/14点 | 板块涨幅前20%且≥2% |
+| `breaking_board_alert` | 炸板预警 | 每5分钟 | 连板≥3标的不在涨停池 → 预警 |
+
+### 情绪周期算法
+
+```
+基础分 50 分
+  + 涨停家数评分 (-30 ~ +40)
+      <20家: -30 (冰点)  |  20-30: -10  |  30-50: +15  |  50-80: +30  |  >80: +40
+  + 晋级率评分 (-15 ~ +15)
+      <10%: -15 (弱势)   |  >30%: +15 (强势)
+  + 炸板率评分 (-15 ~ 0)
+      >40%: -15 (退潮)   |  >25%: -5
+  + 最高连板评分 (0 ~ +10)
+      ≥7板: +10          |  ≥5板: +5
+
+总分 0-100，阶段判定：
+  冰点: 涨停<20家
+  退潮: 炸板率>40%
+  高潮: 得分≥75
+  发酵: 得分≥55
+  修复: 得分<55
+```
+
+### 一进二筛选规则（参考市场验证的高胜率策略）
+
+```
+输入：昨日涨停池中连板数=1 的首板股
+过滤：
+  ✗ 排除烂板: 封单额/流通市值 < 0.2%
+  ✗ 排除过大/过小: 成交额不在 5-20 亿区间
+  ✗ 排除市值极端: 流通市值不在 50-500 亿区间
+通过：
+  ✓ 集合竞价高开 1%-6%
+  ✓ 封单额/流通市值 ≥ 0.5% (中封以上)
+评分 = 10(首板基础) + 封单分(15/8/0) + 涨停分(10)
+```
+
+### 任务执行与存储
+
+```
+TaskManager
+  ├── list_tasks()              # 列出所有任务
+  ├── enable_task(id, bool)     # 启用/禁用
+  ├── update_task_params(id)    # 更新规则参数
+  ├── execute_task(id)          # 手动执行 → TaskResult
+  ├── get_recent_results()      # 最近执行结果 (内存)
+  └── get_results_by_date()     # 历史结果 (文件)
+
+存储: task_results/{YYYY-MM-DD}.jsonl (JSON Lines)
+每行一个 TaskResult:
+  { task_id, name, executed_at, status, summary, data, alerts }
+```
+
+### API 端点
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/tasks` | 列出所有任务 (分 scheduled/monitors) |
+| GET | `/api/tasks/{task_id}` | 任务详情 |
+| POST | `/api/tasks/{task_id}/execute` | 手动执行 |
+| PUT | `/api/tasks/{task_id}/enable?enabled=true` | 启用/禁用 |
+| PUT | `/api/tasks/{task_id}/params` | 更新规则参数 |
+| GET | `/api/tasks/results/recent?limit=50&task_id=` | 最近结果 |
+| GET | `/api/tasks/results/dates` | 有记录的日期 |
+| GET | `/api/tasks/results/{date}` | 指定日期结果 |
 
 ---
 
@@ -507,6 +597,14 @@ lhb_{YYYYMMDD}             → 龙虎榜 (24h TTL)
 | GET | `/api/logs` | 分析日志 | `?date=YYYY-MM-DD` |
 | POST | `/api/cache/clear` | 清理缓存 | `?prefix=` |
 | GET | `/api/cache/stats` | 缓存统计 | - |
+| GET | `/api/tasks` | 任务列表 (scheduled/monitors) | - |
+| GET | `/api/tasks/{task_id}` | 任务详情 | path: task_id |
+| POST | `/api/tasks/{task_id}/execute` | 手动执行任务 | path: task_id |
+| PUT | `/api/tasks/{task_id}/enable` | 启用/禁用 | `?enabled=true\|false` |
+| PUT | `/api/tasks/{task_id}/params` | 更新规则参数 | body: JSON |
+| GET | `/api/tasks/results/recent` | 最近执行结果 | `?limit=50&task_id=` |
+| GET | `/api/tasks/results/dates` | 有记录的日期 | - |
+| GET | `/api/tasks/results/{date}` | 指定日期结果 | path: date |
 
 ---
 
@@ -646,12 +744,22 @@ docker-compose up -d
 
 ## 13. 待完善 (Roadmap)
 
-参见 `LOGS.md`，当前已知缺口：
+### 已完成 ✅
+
+- [x] 任务中心 — 8 个内置任务（3 调度 + 5 规则监听）
+- [x] 情绪周期监控 — 冰点/退潮/修复/发酵/高潮
+- [x] 一进二候选筛选 — 参考高胜率量化策略
+- [x] 封单强度/板块共振/炸板预警监控
+- [x] Docker 部署支持
+
+### 待开发 🔲
 
 - [ ] 历史回测功能（用历史日期数据验证规则准确率）
 - [ ] 更多 K 线形态（锤子线、吞没形态等）
-- [ ] 单元测试（analyzer 规则引擎需测试覆盖）
+- [ ] 单元测试（analyzer + task_manager 测试覆盖）
 - [ ] 信号触发时精确的价格/时间记录
-- [ ] 微信/企微推送通知
+- [ ] 微信/企微推送通知（任务告警推送）
 - [ ] 前端状态管理升级（Pinia）
 - [ ] 数据库存储（如需历史数据长期查询）
+- [ ] 集合竞价量能分析（竞价成交量 vs 昨日总量 5%-20%）
+- [ ] 量化反制策略（识别量化操盘模式，调整打板时机）
