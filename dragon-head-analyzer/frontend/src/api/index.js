@@ -56,6 +56,14 @@ export default {
   health() {
     return api.get('/health')
   },
+  // 数据源状态
+  getSourceStatus() {
+    return api.get('/sources/status')
+  },
+  // 重置数据源优先级
+  resetSources(dataType) {
+    return api.post('/sources/reset', null, { params: { data_type: dataType } })
+  },
 
   // ==================== 任务管理 ====================
   // 任务列表

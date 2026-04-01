@@ -203,6 +203,65 @@
         </tbody>
       </table>
     </div>
+
+    <!-- 数据源健康状态 -->
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">🏥 数据源健康状态</span>
+        <div>
+          <button class="btn btn-sm" @click="resetSources" style="margin-right: 8px;">🔄 重置优先级</button>
+          <button class="btn btn-sm" @click="loadSourceStatus">刷新</button>
+        </div>
+      </div>
+      <div v-if="Object.keys(sourceStatus).length === 0" class="empty">暂无数据源信息</div>
+      <div v-for="(sources, dataType) in sourceStatus" :key="dataType" class="source-group">
+        <div class="source-group-title">{{ dataType }}</div>
+        <table class="data-table source-table">
+          <thead>
+            <tr>
+              <th>数据源</th>
+              <th>优先级</th>
+              <th>健康分</th>
+              <th>有效优先级</th>
+              <th>连续失败</th>
+              <th>总调用</th>
+              <th>成功率</th>
+              <th>状态</th>
+              <th>最后成功</th>
+              <th>最后失败</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="s in sources" :key="s.name"
+              :class="{ 'source-down': !s.available, 'source-warn': s.health < 50 && s.available }">
+              <td><strong>{{ s.name }}</strong></td>
+              <td>{{ s.priority }}</td>
+              <td>
+                <div class="health-bar">
+                  <div class="health-fill" :style="{ width: s.health + '%', background: healthColor(s.health) }"></div>
+                  <span class="health-text">{{ s.health }}</span>
+                </div>
+              </td>
+              <td>{{ s.effective_priority }}</td>
+              <td>
+                <span :class="s.consecutive_failures >= 3 ? 'tag tag-red' : s.consecutive_failures > 0 ? 'tag tag-orange' : 'tag tag-green'">
+                  {{ s.consecutive_failures }}
+                </span>
+              </td>
+              <td>{{ s.total_calls }}</td>
+              <td>{{ s.success_rate }}</td>
+              <td>
+                <span :class="s.available ? 'tag tag-green' : 'tag tag-red'">
+                  {{ s.available ? '✅ 可用' : '❌ 不可用' }}
+                </span>
+              </td>
+              <td>{{ s.last_success }}</td>
+              <td>{{ s.last_failure }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -223,6 +282,7 @@ export default {
       showResult: null,
       filterTaskId: '',
       expandedTask: null,
+      sourceStatus: {},
     }
   },
   computed: {
@@ -234,6 +294,7 @@ export default {
   mounted() {
     this.loadTasks()
     this.loadRecentResults()
+    this.loadSourceStatus()
   },
   methods: {
     async loadTasks() {
@@ -283,6 +344,27 @@ export default {
     },
     toggleExpand(taskId) {
       this.expandedTask = this.expandedTask === taskId ? null : taskId
+    },
+    async loadSourceStatus() {
+      try {
+        const res = await api.getSourceStatus()
+        this.sourceStatus = res.data.data || {}
+      } catch (e) {
+        console.error('加载数据源状态失败:', e)
+      }
+    },
+    async resetSources() {
+      try {
+        await api.resetSources()
+        await this.loadSourceStatus()
+      } catch (e) {
+        this.errorMsg = '重置失败: ' + (e.response?.data?.detail || e.message)
+      }
+    },
+    healthColor(health) {
+      if (health >= 70) return '#52c41a'
+      if (health >= 40) return '#fa8c16'
+      return '#ff4d4f'
     },
     formatTime(isoStr) {
       if (!isoStr) return '-'
@@ -443,4 +525,26 @@ input:checked + .slider:before { transform: translateX(16px); }
 }
 
 .exit-high { background: #fff1f0 !important; }
+
+/* 数据源健康 */
+.source-group { margin-bottom: 16px; }
+.source-group-title {
+  font-weight: 600; font-size: 14px; margin-bottom: 8px;
+  padding: 4px 0; color: #1a1a2e;
+}
+.source-table { font-size: 12px; }
+.source-table td, .source-table th { padding: 6px 8px; }
+.source-down { background: #fff1f0 !important; }
+.source-warn { background: #fff7e6 !important; }
+.health-bar {
+  position: relative; background: #f0f0f0; border-radius: 8px;
+  height: 16px; min-width: 60px; overflow: hidden;
+}
+.health-fill {
+  height: 100%; border-radius: 8px; transition: width 0.5s, background 0.3s;
+}
+.health-text {
+  position: absolute; top: 0; left: 0; right: 0; text-align: center;
+  line-height: 16px; font-size: 10px; font-weight: 700; color: #333;
+}
 </style>

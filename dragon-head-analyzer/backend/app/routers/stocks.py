@@ -168,7 +168,29 @@ async def cache_stats():
 @router.get("/health")
 async def health():
     """健康检查"""
-    return {"status": "ok", "version": "0.2.0", "timestamp": datetime.now().isoformat()}
+    return {"status": "ok", "version": "0.3.0", "timestamp": datetime.now().isoformat()}
+
+
+@router.get("/sources/status")
+async def source_status():
+    """数据源健康状态"""
+    try:
+        status = fetcher.get_source_status()
+        return {"success": True, "data": status}
+    except Exception as e:
+        logger.exception("获取数据源状态失败")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/sources/reset")
+async def source_reset(data_type: str = Query(None, description="数据类型，为空则重置全部")):
+    """重置数据源优先级"""
+    try:
+        fetcher.reset_source_priorities(data_type)
+        return {"success": True, "message": "数据源优先级已重置"}
+    except Exception as e:
+        logger.exception("重置数据源失败")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # =============================================================================

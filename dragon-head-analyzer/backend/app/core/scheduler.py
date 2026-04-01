@@ -24,11 +24,18 @@ def _run_task(task_id: str):
     try:
         result = task_manager.execute_task(task_id)
         logger.info(f"[Scheduler] {result.name}: {result.summary}")
-        # 有告警则记录到日志
         for alert in result.alerts:
             logger_svc.log(f"⚠️ [{alert['type']}] {alert['name']} - {alert['detail']}")
     except Exception as e:
         logger.exception(f"[Scheduler] 任务执行异常: {task_id}")
+
+
+def _recover_sources():
+    """定期恢复数据源健康分"""
+    try:
+        fetcher.registry.recover_all()
+    except Exception as e:
+        logger.error(f"[Scheduler] 数据源恢复异常: {e}")
 
 
 def setup_scheduler():
@@ -72,6 +79,17 @@ def setup_scheduler():
 
     scheduler.start()
     logger.info(f"[Scheduler] 调度器启动完成，共注册 {count} 个任务")
+
+    # 注册数据源健康恢复（每10分钟）
+    from apscheduler.triggers.interval import IntervalTrigger
+    scheduler.add_job(
+        _recover_sources,
+        IntervalTrigger(minutes=10),
+        id="source_recovery",
+        name="数据源健康恢复",
+        replace_existing=True,
+    )
+    logger.info("[Scheduler] 数据源健康恢复任务已注册 (每10分钟)")
 
 
 def reload_task_schedule(task_id: str):
