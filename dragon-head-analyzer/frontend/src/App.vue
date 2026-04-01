@@ -9,6 +9,7 @@
         <li><router-link to="/" exact-active-class="active">📊 看板</router-link></li>
         <li><router-link to="/zt-pool" active-class="active">🔥 涨停池</router-link></li>
         <li><router-link to="/boards" active-class="active">📂 板块</router-link></li>
+        <li><router-link to="/tasks" active-class="active">⚙️ 任务</router-link></li>
         <li><router-link to="/logs" active-class="active">📝 日志</router-link></li>
       </ul>
       <div class="nav-footer">

@@ -1,43 +1,124 @@
 """
-定时调度器
+定时调度器 - 集成任务管理系统
 """
+import logging
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from ..services.data_fetcher import DataFetcher
 from ..services.analyzer import DragonHeadAnalyzer
 from ..services.logger import AnalyzerLogger
+from ..services.task_manager import TaskManager
 from ..core.config import SCHEDULER_CONFIG
+
+logger = logging.getLogger(__name__)
 
 scheduler = BackgroundScheduler()
 fetcher = DataFetcher()
-logger = AnalyzerLogger()
-analyzer = DragonHeadAnalyzer(fetcher, logger)
+logger_svc = AnalyzerLogger()
+analyzer = DragonHeadAnalyzer(fetcher, logger_svc)
+task_manager = TaskManager(fetcher, analyzer, logger_svc)
 
 
-def scheduled_scan():
-    """定时扫描任务"""
-    logger.log("[定时任务] 开始盘后扫描")
+def _run_task(task_id: str):
+    """调度回调：执行任务"""
     try:
-        result = analyzer.scan_all()
-        for s in result.get("signals", []):
-            logger.log_signal(s)
-        logger.log(f"[定时任务] 扫描完成，{len(result.get('signals', []))} 条信号")
+        result = task_manager.execute_task(task_id)
+        logger.info(f"[Scheduler] {result.name}: {result.summary}")
+        # 有告警则记录到日志
+        for alert in result.alerts:
+            logger_svc.log(f"⚠️ [{alert['type']}] {alert['name']} - {alert['detail']}")
     except Exception as e:
-        logger.log(f"[定时任务] 扫描异常: {e}")
+        logger.exception(f"[Scheduler] 任务执行异常: {task_id}")
 
 
 def setup_scheduler():
-    """注册定时任务"""
-    # 每个交易日 15:10 收盘分析
-    scheduler.add_job(
-        scheduled_scan,
-        CronTrigger(
-            hour=SCHEDULER_CONFIG["close_analysis_hour"],
-            minute=SCHEDULER_CONFIG["close_analysis_minute"],
-            day_of_week="mon-fri"
-        ),
-        id="close_analysis",
-        name="收盘龙头扫描"
-    )
+    """注册所有启用任务的定时调度"""
+    count = 0
+    for task in task_manager.tasks.values():
+        if not task.enabled:
+            continue
+        if not task.schedule_type or not task.schedule_expr:
+            continue
+
+        try:
+            if task.schedule_type == "cron":
+                parts = task.schedule_expr.split()
+                trigger = CronTrigger(
+                    minute=parts[0] if len(parts) > 0 else "*",
+                    hour=parts[1] if len(parts) > 1 else "*",
+                    day=parts[2] if len(parts) > 2 else "*",
+                    month=parts[3] if len(parts) > 3 else "*",
+                    day_of_week=parts[4] if len(parts) > 4 else "*",
+                )
+            elif task.schedule_type == "interval":
+                from apscheduler.triggers.interval import IntervalTrigger
+                trigger = IntervalTrigger(seconds=int(task.schedule_expr))
+            else:
+                logger.warning(f"[Scheduler] 不支持的调度类型: {task.schedule_type}")
+                continue
+
+            scheduler.add_job(
+                _run_task,
+                trigger=trigger,
+                args=[task.task_id],
+                id=task.task_id,
+                name=task.name,
+                replace_existing=True,
+            )
+            count += 1
+            logger.info(f"[Scheduler] 注册任务: {task.name} ({task.schedule_expr})")
+        except Exception as e:
+            logger.error(f"[Scheduler] 注册任务失败 {task.task_id}: {e}")
+
     scheduler.start()
-    logger.log("[调度器] 已启动，收盘分析时间: 周一至周五 15:10")
+    logger.info(f"[Scheduler] 调度器启动完成，共注册 {count} 个任务")
+
+
+def reload_task_schedule(task_id: str):
+    """重新注册单个任务的调度（启用/禁用后调用）"""
+    task = task_manager.get_task(task_id)
+    if not task:
+        return False
+
+    # 移除旧任务
+    try:
+        scheduler.remove_job(task_id)
+    except Exception:
+        pass
+
+    if not task.enabled:
+        logger.info(f"[Scheduler] 任务已禁用: {task.name}")
+        return True
+
+    if not task.schedule_type or not task.schedule_expr:
+        return False
+
+    try:
+        parts = task.schedule_expr.split()
+        if task.schedule_type == "cron":
+            trigger = CronTrigger(
+                minute=parts[0] if len(parts) > 0 else "*",
+                hour=parts[1] if len(parts) > 1 else "*",
+                day=parts[2] if len(parts) > 2 else "*",
+                month=parts[3] if len(parts) > 3 else "*",
+                day_of_week=parts[4] if len(parts) > 4 else "*",
+            )
+        elif task.schedule_type == "interval":
+            from apscheduler.triggers.interval import IntervalTrigger
+            trigger = IntervalTrigger(seconds=int(task.schedule_expr))
+        else:
+            return False
+
+        scheduler.add_job(
+            _run_task,
+            trigger=trigger,
+            args=[task_id],
+            id=task_id,
+            name=task.name,
+            replace_existing=True,
+        )
+        logger.info(f"[Scheduler] 重新注册任务: {task.name}")
+        return True
+    except Exception as e:
+        logger.error(f"[Scheduler] 重新注册失败 {task_id}: {e}")
+        return False

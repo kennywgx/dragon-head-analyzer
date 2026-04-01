@@ -22,6 +22,11 @@ const routes = [
     component: () => import('../views/Boards.vue'),
   },
   {
+    path: '/tasks',
+    name: 'Tasks',
+    component: () => import('../views/Tasks.vue'),
+  },
+  {
     path: '/logs',
     name: 'Logs',
     component: () => import('../views/Logs.vue'),

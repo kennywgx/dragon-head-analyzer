@@ -56,4 +56,38 @@ export default {
   health() {
     return api.get('/health')
   },
+
+  // ==================== 任务管理 ====================
+  // 任务列表
+  getTasks() {
+    return api.get('/tasks')
+  },
+  // 任务详情
+  getTask(taskId) {
+    return api.get(`/tasks/${taskId}`)
+  },
+  // 手动执行任务
+  executeTask(taskId) {
+    return api.post(`/tasks/${taskId}/execute`)
+  },
+  // 启用/禁用任务
+  enableTask(taskId, enabled) {
+    return api.put(`/tasks/${taskId}/enable`, null, { params: { enabled } })
+  },
+  // 更新任务参数
+  updateTaskParams(taskId, params) {
+    return api.put(`/tasks/${taskId}/params`, params)
+  },
+  // 最近执行结果
+  getTaskResults(taskId, limit = 50) {
+    return api.get('/tasks/results/recent', { params: { task_id: taskId, limit } })
+  },
+  // 有记录的日期
+  getTaskResultDates() {
+    return api.get('/tasks/results/dates')
+  },
+  // 指定日期结果
+  getTaskResultsByDate(date) {
+    return api.get(`/tasks/results/${date}`)
+  },
 }
